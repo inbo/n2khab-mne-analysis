@@ -105,9 +105,9 @@ WITH BASE AS (
     , unnest(string_to_array(SU.schemes, '|')) AS scheme
     , 1 as loceval
     , CASE
-        WHEN V.issues THEN 0
-        WHEN SU.type_is_absent THEN  0
-        ELSE 1
+        WHEN V.issues THEN FALSE
+        WHEN SU.type_is_absent THEN FALSE
+        ELSE ((V.type_assessed IS NULL) OR (V.type_assessed = V.type))
       END AS loceval_approved
   FROM "metadata"."Locations" LOC
   INNER JOIN "inbound"."Visits" V

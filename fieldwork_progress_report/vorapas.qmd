@@ -332,7 +332,8 @@ SELECT
   , IV.date_visit as installation_date
   , COALESCE(SUM(CAST(SV.visit_done as INT)), 0) as nr_visits
   , TRUE AS is_installed
-  , CASE WHEN SUM(CAST(SV.visit_done as INT)) > 0 THEN TRUE ELSE FALSE END AS is_sampled
+  -- , CASE WHEN SUM(CAST(SV.visit_done as INT)) > 0 THEN TRUE ELSE FALSE END AS is_sampled
+  , BOOL_OR(SV.visit_done) AS is_sampled
   , IV.watina_code_used_1_peilbuis
   , IV.watina_code_used_2_piezometer
   , SV.recipient_code

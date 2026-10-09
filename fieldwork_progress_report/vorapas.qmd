@@ -444,7 +444,7 @@ cat(
   nrow(
     gw_locevals
   ),
-  "\nthat can be mathed by type: ",
+  "\nthat can be matched by type: ",
   nrow(
     gw_locevals |> 
       inner_join(

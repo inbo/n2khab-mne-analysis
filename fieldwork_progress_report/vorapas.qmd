@@ -717,9 +717,10 @@ plot_locevals_by_scheme_facets
 
 ### Surface water
 
-A visit is defined as the combination of stratum-location-date (e.g.: as
-on one day the same location is sampled for mutiple strata, this is
-counted as multiple visits)
+> A visit is defined as the combination of stratum-location-date (e.g.: as
+> on one day the same location is sampled for mutiple strata, this is
+> counted as multiple visits)
+
 
 ```{r}
 kaart_sf <- surf_samples |>

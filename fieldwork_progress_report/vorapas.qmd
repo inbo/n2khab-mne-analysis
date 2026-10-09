@@ -17,17 +17,6 @@ editor:
     wrap: 72
 ---
 
-# Purpose
-
-This report delivers the graphs and descriptives for the VORA-pas report
-of 09/2026.
-
-# Setup script
-
-This part contains connection function and necessary packages used in
-the notebook. If this becomes to exhaustive, it can be added to a
-separate script.
-
 ```{r}
 library(inbolims)
 library(dplyr)
@@ -40,98 +29,61 @@ library(purrr)
 library(scales)
 ```
 
-```{r}
-veldwerk_connect <- function(dbname = "your_default_db") {
-  # Read credentials from environment variables (.Renviron)
-  host <- Sys.getenv("VELDWERK_HOST")
-  port <- Sys.getenv("VELDWERK_PORT")
-  user <- Sys.getenv("VELDWERK_USER")
-  pass <- Sys.getenv("VELDWERK_PASS")
-  
-  # Check to ensure credentials are set
-  if (host == "" || user == "" || pass == "") {
-    stop("Database credentials are missing. Check your .Renviron file.")
-  }
-  
-  DBI::dbConnect(
-    drv      = RPostgres::Postgres(),
-    dbname   = dbname,
-    host     = host,
-    port     = port,
-    user     = user,
-    password = pass
-  )
-}
-```
+# Purpose
 
-# Database connections
+This report delivers the graphs and descriptives for the VORA-pas report
+of 09/2026.
+
+# Data
 
 ```{r}
-con_gw <- veldwerk_connect("mnmgwdb")
-con_surf <- veldwerk_connect("mnmsurfdb")
-con_le <- veldwerk_connect("loceval")
-con_lims <- lims_connect()
-```
-
-```{r}
-# dbDisconnect(con_gw)
-# dbDisconnect(con_surf)
-# dbDisconnect(con_le)
-# dbDisconnect(con_lims)
-```
-
-# Location Evaluation
-
-```{sql}
---| connection: con_le
---| output.var: all_locevals
-
-WITH BASE AS (
-  SELECT 
-    ST_AsText(LOC.wkb_geometry) AS wkb_geometry
-    , LOC.grts_address
-    , LOC.location_id
-    , SU.sampleunit_id
-    , V.date_visit
-    , V.type
-    , V.type_assessed
-    , V.notes
-    , V.issues
-    , V.visit_done
-    , SU.is_replaced
-    , SU.type_is_absent
-    , R.grts_address_replacement
-    , R.is_selected
-    , unnest(string_to_array(SU.schemes, '|')) AS scheme
-    , 1 as loceval
-    , CASE
-        WHEN V.issues THEN 0
-        WHEN SU.type_is_absent THEN  0
-        ELSE 1
-      END AS loceval_approved
-  FROM "metadata"."Locations" LOC
-  INNER JOIN "inbound"."Visits" V
-  ON LOC.location_id = V.location_id AND LOC.grts_address = V.grts_address
-  INNER JOIN "outbound"."SampleUnits" SU
-  ON V.sampleunit_id = SU.sampleunit_id
-  LEFT JOIN "outbound"."Replacements" R
-  ON SU.replacement_id = R.replacement_id
-  WHERE V.visit_done
-  -- AND SU.schemes LIKE '%GW_03.3%'
+snapshot_dir <- here::here(
+  "data", "snapshots", "vora-pas-2026-09-26"
 )
 
-SELECT * 
-FROM BASE
-WHERE scheme IN ('GW_03.3', 'SOIL_03.2', 'SURF_03.4_lentic')
+le_fieldwork <- readRDS(file.path(snapshot_dir, "le_fieldwork.rds"))
+gw_fieldwork <- readRDS(file.path(snapshot_dir, "gw_fieldwork.rds"))
+gw_types <- readRDS(file.path(snapshot_dir, "gw_types.rds"))
+gw_domains <- readRDS(file.path(snapshot_dir, "gw_domains.rds"))
+surf_fieldwork <- readRDS(file.path(snapshot_dir, "surf_fieldwork.rds"))
+lims_sampleresults <- readRDS(file.path(snapshot_dir, "lims_sampleresults.rds"))
+rep_types <- readRDS(file.path(snapshot_dir, "rep_types.rds"))
+rep_sbz <- readRDS(file.path(snapshot_dir, "rep_sbz.rds"))
+vlaanderen_provincies <- readRDS(file.path(snapshot_dir, "vlaanderen_provincies.rds"))
 ```
 
+# Transformations
+
 ```{r}
-gw_locevals <- all_locevals |>
+gw_locevals <- le_fieldwork |>
   filter(scheme == 'GW_03.3')
+
+lims_ids <- lims_sampleresults |> 
+  select(recipient_code) |>
+  distinct() |> 
+  add_column(in_lims = 1)
+
+gw_samples <- gw_fieldwork |> 
+  filter(is_sampled) |> 
+  select(
+    sampleunit_id
+    , location_id
+    , grts_address
+    , sampling_date,
+    , stratum
+    , project_code
+    , recipient_code
+  )
 ```
 
+# Analysis
+
+## Loceval
+
+**Total locevals**
+
 ```{r}
-loceval_overview <- all_locevals |>
+loceval_overview <- le_fieldwork |>
   summarise(
     total_locevals_over_schemes = n(),
     distinct_locevals = n_distinct(location_id, sampleunit_id),
@@ -144,7 +96,7 @@ loceval_overview
 **Locevals by scheme**
 
 ```{r}
-loceval_by_scheme <- all_locevals |>
+loceval_by_scheme <- le_fieldwork |>
   group_by(scheme) |>
   summarise(
     nr_locevals = sum(loceval),
@@ -157,7 +109,7 @@ loceval_by_scheme
 **Locevals by category**
 
 ```{r}
-loceval_by_category <- all_locevals |>
+loceval_by_category <- le_fieldwork |>
   group_by(issues, type_is_absent, is_replaced) |>
   summarise(
     nr_locevals = sum(loceval),
@@ -179,11 +131,11 @@ Interpretation:
 - `type_is_absent = TRUE`, `is_replaced = FALSE`: expected type absent
   without possible replacement
 
-Type assessment validation (some rows have inconsistent data)\
-–\> in the report we use the above interpretation
+\*\*Locevals with inconsistent data\*\* –\> in the report we use the
+above interpretation
 
 ```{r}
-loceval_inconsistent_data <- all_locevals |>
+loceval_inconsistent_data <- le_fieldwork |>
   filter(
     !issues,
     (
@@ -199,9 +151,9 @@ loceval_inconsistent_data <- all_locevals |>
 loceval_inconsistent_data
 ```
 
-# Groundwater fieldwork
+## Groundwater
 
-## Total executed installations
+**Total executed installations**
 
 An executed installation is linked to a field calendar that
 
@@ -209,29 +161,8 @@ An executed installation is linked to a field calendar that
 - has a completed visit,
 - and has no reported issue.
 
-```{sql}
---| connection: con_gw
---| output.var: gw_installations
-
-SELECT
-  IV.location_id,
-  IV.sampleunit_id,
-  IV.grts_address,
-  IV.date_visit,
-  IV.stratum,
-  IV.watina_code_used_1_peilbuis,
-  IV.watina_code_used_2_piezometer
-FROM "inbound"."InstallationVisits" AS IV
-INNER JOIN "outbound"."FieldCalendars" AS FC
-  ON IV.fieldcalendar_id = FC.fieldcalendar_id
-WHERE NOT IV.issues
-  AND IV.visit_done
-  AND NOT FC.excluded
-ORDER BY IV.date_visit DESC
-```
-
 ```{r}
-gw_installation_summary <- gw_installations |>
+gw_installation_summary <- gw_fieldwork |>
   summarise(
     # nr_installation_rows = n(),
     nr_sample_units = n_distinct(sampleunit_id),
@@ -242,124 +173,10 @@ gw_installation_summary <- gw_installations |>
 gw_installation_summary
 ```
 
-## Installation counts by domain and typegroup
+**Installation counts by domain and typegroup**
 
-### Domains
-
-The domain mapping below groups fieldwork locations into the reporting
-areas. Locations without a domain part are excluded from the grouped
-summary.
-
-```{sql}
---| connection: con_gw
---| output.var: gw_domains
-
-SELECT 
-    DISTINCT grts_address, domain_part,
-    CASE 
-        WHEN domain_part = 'BE2100015' THEN 'Kalmthoutse Heide'
-        WHEN domain_part = 'BE2100024' THEN 'Turnhouts Vennengebied'
-        WHEN domain_part = 'BE2200028' THEN 'Mechelse Heide'
-        WHEN domain_part = 'BE2200035' THEN 'Voerstreek'
-        WHEN domain_part = 'BE2200039' THEN 'De Maten'
-        WHEN domain_part = 'Flanders_remainder' THEN 'Overig Vlaanderen'
-        WHEN domain_part = 'SAC_network_remainder' THEN 'Overig SBZ-H'
-        ELSE domain_part
-    END AS domain_name
-FROM "outbound"."SampleUnits"
-WHERE schemes = 'GW_03.3'
-AND domain_part IS NOT NULL
-```
-
-### Typegroup
-
-```{sql}
---| connection: con_gw
---| output.var: gw_types
-
-SELECT DISTINCT stratum, type, main_type
-FROM "metadata"."N2kHabStrata"
-```
-
-```{r}
-rep_types <- n2khabmon::read_scheme_types(lang = "nl") |> 
-  filter(.data$scheme == 'GW_03.3')
-```
-
-### Lims
-
-```{sql}
---| connection: con_lims
---| output.var: lims_ids
-
-SELECT
-  s.LabSampleID as recipient_code
-  , 1 as in_lims
-FROM  dimSample s
-INNER JOIN dimProject p ON s.ProjectKey = p.ProjectKey
-WHERE (p.Project LIKE 'V-25W016%' OR p.Project LIKE 'V-26W012%')
-```
-
-### Installations
-
-```{sql}
---| connection: con_gw
---| output.var: gw_fieldwork
-
-WITH sampling_visits AS  (
-  SELECT 
-    SV.location_id
-    , SV.sampleunit_id
-    , SV.visit_done
-    --, recipient_code
-    , CASE 
-        WHEN SV.recipient_code = '26-08679' THEN '26-008679' 
-    --    WHEN SV.grts_address = '35039538' THEN NULL
-        ELSE SV.recipient_code 
-      END as recipient_code
-  FROM  "inbound"."SamplingVisits" SV
-  INNER JOIN "outbound"."FieldCalendars" FC
-  ON SV.fieldcalendar_id = FC.fieldcalendar_id
-  WHERE NOT SV.issues
-  AND SV.visit_done
-  AND NOT FC.excluded
-)
-
-SELECT 
-  ST_AsText(LOC.wkb_geometry) AS wkb_geometry
-  , LOC.grts_address
-  , IV.stratum
-  , IV.date_visit as installation_date
-  , COALESCE(SUM(CAST(SV.visit_done as INT)), 0) as nr_visits
-  , TRUE AS is_installed
-  , CASE WHEN SUM(CAST(SV.visit_done as INT)) > 0 THEN TRUE ELSE FALSE END AS is_sampled
-  , IV.watina_code_used_1_peilbuis
-  , IV.watina_code_used_2_piezometer
-  , SV.recipient_code
-FROM "metadata"."Locations" LOC
-INNER JOIN "inbound"."InstallationVisits" IV
-ON LOC.location_id = IV.location_id AND LOC.grts_address = IV.grts_address
-INNER JOIN "outbound"."FieldCalendars" FC
-ON IV.fieldcalendar_id = FC.fieldcalendar_id
-LEFT JOIN sampling_visits SV
-ON IV.location_id = SV.location_id AND IV.sampleunit_id = SV.sampleunit_id
-WHERE NOT IV.issues
-AND IV.visit_done
-AND NOT FC.excluded
-GROUP BY 
-  LOC.wkb_geometry
-  , LOC.location_id
-  , LOC.grts_address
-  , IV.stratum
-  , IV.sampleunit_id
-  , IV.date_visit
-  , IV.watina_code_used_1_peilbuis
-  , IV.watina_code_used_2_piezometer
-  , SV.recipient_code
-ORDER BY is_sampled
-```
-
-### Combined reporting table
+The domain mapping groups fieldwork locations into the reporting areas.
+Locations without a domain part are excluded from the grouped summary.
 
 ```{r}
 gw_basetable <- gw_fieldwork |> 
@@ -465,37 +282,12 @@ cat(
 )
 ```
 
-# Surface water fieldwork
+## Surface water
 
-```{sql}
---| connection: con_surf
---| output.var: surf_samples
-
-SELECT 
-  ---LV.*
-  ST_AsText(LOC.wkb_geometry) AS wkb_geometry
-  , LOC.grts_address
-  , LV.sampleunit_id
-  , LV.stratum
-  , LV.date_start
-  , LV.date_visit
-  , LV.log_user
-  , LV.notes
-  , sampling_done
-FROM "metadata"."Locations" LOC
-INNER JOIN "inbound"."VisitsUnnested" LV
-ON LOC.location_id = LV.location_id AND LOC.grts_address = LV.grts_address
-INNER JOIN "outbound"."FieldCalendars" FC
-ON LV.visit_id = FC.visit_id AND LV.fieldcalendar_id = FC.fieldcalendar_id
-WHERE NOT LV.issues
-AND LV.visit_done
-AND NOT FC.excluded
--- AND sampling_done -- (is always true??)
-ORDER BY grts_address, stratum
-```
+**Total sampled locations**
 
 ```{r}
-surf_overview <- surf_samples |>
+surf_overview <- surf_fieldwork |>
   summarise(
     nr_samples = n(),
     nr_sample_units = n_distinct(sampleunit_id),
@@ -504,7 +296,7 @@ surf_overview <- surf_samples |>
 surf_overview
 ```
 
-# Spatial overview
+## Spatial overview
 
 ```{r}
 inbo_roze <- "#C04384"
@@ -513,25 +305,7 @@ inbo_paars <- "#843860"
 inbo_groen <- "#C2C444"
 ```
 
-```{r}
-vlaanderen_provincies <- gisco_get_nuts(
-  country = "Belgium",
-  nuts_level = 2,
-  resolution = "01"
-) %>%
-  filter(NUTS_NAME %in% c(
-    "Prov. Antwerpen"
-    , "Prov. Limburg (BE)"
-    , "Prov. Oost-Vlaanderen"
-    , "Prov. Vlaams-Brabant"
-    , "Prov. West-Vlaanderen"
-  )) %>%
-  st_transform(crs = 31370)
-
-sbz_h <- n2khab::read_admin_areas(dsn = "sac")
-```
-
-### Groundwater installations and samples
+**Groundwater installations and samples**
 
 ```{r}
 kaart_sf <- gw_fieldwork %>%
@@ -553,7 +327,7 @@ plot_gw_installations_samples <- ggplot() +
   ) +
   # Laag 1: SBZ-H gebieden
   geom_sf(
-    data = sbz_h,
+    data = rep_sbz,
     fill = "grey75",
     color = "grey75",
     alpha = 0.25,
@@ -595,10 +369,10 @@ plot_gw_installations_samples <- ggplot() +
 plot_gw_installations_samples
 ```
 
-### Locevals by scheme
+**Locevals by scheme**
 
 ```{r}
-locevals_sf <- all_locevals |>
+locevals_sf <- le_fieldwork |>
   filter(!is.na(wkb_geometry)) |>
   st_as_sf(wkt = "wkb_geometry", crs = 31370)
 
@@ -615,7 +389,7 @@ scheme_shapes <- c(
 )
 
 # Rarest scheme last -> plotted on top, so it isn't hidden by the others
-scheme_order <- all_locevals |>
+scheme_order <- le_fieldwork |>
   count(scheme) |>
   arrange(desc(n)) |>
   pull(scheme)
@@ -639,7 +413,7 @@ plot_locevals_by_scheme <- ggplot() +
   ) +
   # Laag 1: SBZ-H gebieden
   geom_sf(
-    data = sbz_h,
+    data = rep_sbz,
     fill = "grey75",
     color = "grey75",
     alpha = 0.25,
@@ -682,7 +456,7 @@ plot_locevals_by_scheme_facets <- ggplot() +
   ) +
   # Laag 1: SBZ-H gebieden
   geom_sf(
-    data = sbz_h,
+    data = rep_sbz,
     fill = "grey75",
     color = "grey75",
     alpha = 0.25,
@@ -713,17 +487,75 @@ plot_locevals_by_scheme_facets <- ggplot() +
 plot_locevals_by_scheme_facets
 ```
 
-### Surface water
+```{r}
+#| fig-height: 4
+#| fig-width: 8
+
+# Filter for the SOIL scheme first
+soil_locevals_sf <- filter(locevals_sf, scheme == "SOIL_03.2")
+
+plot_soil_evals_approved <- ggplot() +
+  # Laag 0: Omtrek en provinciegrenzen van Vlaanderen
+  geom_sf(
+    data = vlaanderen_provincies,
+    fill = "white",
+    color = "grey55",
+    linewidth = 0.35
+  ) +
+  # Laag 1: SBZ-H gebieden
+  geom_sf(
+    data = rep_sbz,
+    fill = "grey75",
+    color = "grey75",
+    alpha = 0.25,
+    linewidth = 0.25
+  ) +
+  # Laag 2: Afgekeurde locaties
+  geom_sf(
+    data = filter(soil_locevals_sf, loceval_approved == 0),
+    aes(color = "Geëvalueerd en afgekeurd", shape = "Geëvalueerd en afgekeurd"),
+    size = 2.5
+  ) +
+  # Laag 3: Geschikte locaties
+  geom_sf(
+    data = filter(soil_locevals_sf, loceval_approved == 1),
+    aes(color = "Geëvalueerd en geschikt", shape = "Geëvalueerd en geschikt"),
+    size = 2.5
+  ) +
+  scale_color_manual(
+    name   = NULL,
+    values = c("Geëvalueerd en afgekeurd" = "grey50", "Geëvalueerd en geschikt" = inbo_roze),
+    breaks = c("Geëvalueerd en afgekeurd", "Geëvalueerd en geschikt")
+  ) +
+  scale_shape_manual(
+    name   = NULL,
+    values = c("Geëvalueerd en afgekeurd" = 17, "Geëvalueerd en geschikt" = 17), # Solid triangles for both categories
+    breaks = c("Geëvalueerd en afgekeurd", "Geëvalueerd en geschikt")
+  ) +
+  
+  # Stijl en opmaak
+  theme_void() +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.border     = element_rect(color = "black", fill = NA, linewidth = 0.6),
+    plot.margin      = margin(8, 8, 8, 8),
+    legend.position  = "bottom"
+  )
+
+plot_soil_evals_approved
+```
+
+**Surface water**
 
 A visit is defined as the combination of stratum-location-date (e.g.: as
 on one day the same location is sampled for mutiple strata, this is
 counted as multiple visits)
 
 ```{r}
-kaart_sf <- surf_samples |>
+kaart_sf <- surf_fieldwork |>
   filter(!is.na(wkb_geometry)) |>
-  group_by(grts_address, wkb_geometry) |>
-  summarise(n_visits = n(), .groups = "drop") |>
+  distinct(grts_address, wkb_geometry) |>
   st_as_sf(wkt = "wkb_geometry", crs = 31370)
 ```
 
@@ -741,24 +573,18 @@ plot_surface_water_visits <- ggplot() +
   ) +
   # Laag 1: SBZ-H gebieden
   geom_sf(
-    data = sbz_h,
+    data = rep_sbz,
     fill = "grey75",
     color = "grey75",
     alpha = 0.25,
     linewidth = 0.25
   ) +
-  # Laag 2: Lentic visits, sized by number of visits at the same location
+  # Laag 2: Lentic visits (fixed appearance, no legend)
   geom_sf(
     data = kaart_sf,
-    aes(size = n_visits),
     color = inbo_blauw,
-    shape = 16
-    # alpha = 0.8
-  ) +
-  scale_size_continuous(
-    name   = "Aantal bezoeken",
-    range  = c(2, 5),  # smallest dot (1 visit) still visible, largest stays readable
-    breaks = range(kaart_sf$n_visits)
+    shape = 16,
+    size = 2.5
   ) +
   
   # Stijl en opmaak
@@ -768,51 +594,18 @@ plot_surface_water_visits <- ggplot() +
     plot.background  = element_rect(fill = "white", color = NA),
     panel.border     = element_rect(color = "black", fill = NA, linewidth = 0.6),
     plot.margin      = margin(8, 8, 8, 8),
-    legend.position  = "bottom"
-  ) +
-  guides(
-    size = guide_legend(
-      title.position = "top",
-      label.position = "bottom"
-    )
+    legend.position  = "none"
   )
 
 plot_surface_water_visits
 ```
 
-# LIMS linkage
+## LIMS
 
-## Approved sampling visits
-
-```{sql}
---| connection: con_gw
---| output.var: sampling_visits
-
-SELECT
-  SV.sampleunit_id,
-  SV.location_id,
-  SV.grts_address,
-  SV.date_start,
-  SV.date_visit,
-  SV.stratum,
-  SV.project_code AS project_code_fieldwork,
-  --recipient_code
-  CASE
-    WHEN SV.recipient_code = '26-08679' THEN '26-008679'
-  --  WHEN SV.grts_address = '35039538' THEN NULL
-    ELSE SV.recipient_code
-  END AS recipient_code
-FROM "inbound"."SamplingVisits" AS SV
-INNER JOIN "outbound"."FieldCalendars" AS FC
-  ON SV.fieldcalendar_id = FC.fieldcalendar_id
-WHERE NOT SV.issues
-  AND SV.visit_done
-  AND NOT FC.excluded
-ORDER BY SV.date_visit DESC
-```
+**Approved sampling visits**
 
 ```{r}
-gw_sampling_overview <- sampling_visits |>
+gw_sampling_overview <- gw_samples |> 
   summarise(
     nr_visits = n(),
     nr_locations = n_distinct(grts_address),
@@ -821,96 +614,10 @@ gw_sampling_overview <- sampling_visits |>
 gw_sampling_overview
 ```
 
-## Lims data
-
-```{sql}
---| connection: con_lims
---| output.var: data_lims
-
-WITH RankedResults AS (
-    SELECT 
-      r.Project
-      , s.LabSampleID
-      , r.Customer
-      , s.FieldSampleID
-      , s.FieldSamplingDate
-      , s.FieldObserver
-      , r.Component
-      , u.Unit
-      , r.Result as OriginalResult
-      , TRY_CAST(REPLACE(r.Result, ',', '.') AS FLOAT) AS Result
-      , CASE
-          WHEN r.Component = 'NH4' THEN 0.776
-          WHEN r.Component = 'NO3' THEN 0.226
-          WHEN r.Component = 'PO4' THEN 0.326
-          ELSE 1.0
-        END AS ConversionFactor
-      , r.isBelowLOQ
-      , cmp.LOQ
-      , CAST(REPLACE(REPLACE(REPLACE(cmp.LOQ, '<', ''), ' ', ''), ',', '.') AS FLOAT) AS LOQValue
-      , s.SampleStatus
-      , r.ResultStatus
-      , p.ProjectStatus
-      , s.SampleType
-      , ROW_NUMBER() OVER (
-          PARTITION BY r.Project, s.LabSampleID, r.Component
-          ORDER BY 
-              p.ProjectStatus DESC,   -- MIN ProjectStatus (bijv. 'V' boven 'C')
-              s.SampleStatus ASC,  -- MAX SampleStatus (bijv. 'A' boven 'C')
-              r.ResultStatus ASC   -- MAX ResultStatus (bijv. 'A' boven 'E')
-        ) AS rn
-    FROM dimSample s 
-    LEFT JOIN factResult r ON r.SampleKey = s.SampleKey 
-    INNER JOIN dimProject p ON r.ProjectKey = p.ProjectKey 
-    INNER JOIN dimComponent cmp ON r.ComponentKey = cmp.ComponentKey 
-    INNER JOIN dimUnit u ON r.UnitKey = u.UnitKey 
-    WHERE (r.Project LIKE 'V-25W016%' OR r.Project LIKE 'V-26W012%')
-      --AND r.ResultStatus != 'X'
-      AND r.Component IN ('NH4', 'NO3', 'PO4', 'SO4')
-      AND (s.SampleType IS NULL OR s.SampleType in ('Project'))
-      AND r.IsReportable = 1
-)
-SELECT 
-  Project as project_code_lims
-  , LabSampleID as recipient_code
-  , Component
-  --, rn
-  , CASE
-      WHEN Component = 'NH4' THEN 'N-NH4'
-      WHEN Component = 'NO3' THEN 'N-NO3'
-      WHEN Component = 'PO4' THEN 'P-PO4'
-      ELSE Component
-    END as chem_variable
-  , ProjectStatus
-  , SampleStatus
-  , ResultStatus
-  , Customer
-  , FieldSampleID
-  , FieldSamplingDate
-  , FieldObserver
-  , Unit as unit
-  , OriginalResult
-  , Result
-  , CASE 
-      WHEN isBelowLOQ = 1 
-      THEN LOQValue 
-      ELSE Result 
-    END * ConversionFactor AS value
-  , isBelowLOQ
-  , LOQ
-  , LOQValue
-  , 'available' as in_lims
-FROM RankedResults
-WHERE rn = 1
-ORDER BY Project, LabSampleID, Component
-```
-
-## Status 'C'
-
-(records with unapproved status)
+**Unapproved records**
 
 ```{r}
-lims_unapproved_data <- data_lims |> 
+lims_unapproved_data <- lims_sampleresults |> 
   filter(
     ProjectStatus != 'V' | SampleStatus != 'A' | ResultStatus != 'A'
   ) |> 
@@ -925,12 +632,12 @@ lims_unapproved_data <- data_lims |>
 lims_unapproved_data
 ```
 
-## Recipient codes that cannot be linked
+**Recipient codes that cannot be linked**
 
 Missing ids in veldwerkdatabank
 
 ```{r}
-gw_samples_missing_id <- sampling_visits |> 
+gw_samples_missing_id <- gw_samples |> 
   filter(
     is.na(recipient_code)
   )
@@ -940,10 +647,10 @@ gw_samples_missing_id
 In veldwerkdatabank, but not in LIMS
 
 ```{r}
-gw_samples_missing_in_lims <- sampling_visits |> 
+gw_samples_missing_in_lims <- gw_samples |> 
   filter(
     !is.na(recipient_code),
-    !recipient_code %in% data_lims$recipient_code
+    !recipient_code %in% lims_sampleresults$recipient_code
   )
 gw_samples_missing_in_lims
 ```
@@ -951,24 +658,24 @@ gw_samples_missing_in_lims
 In LIMS, but not in veldwerkdatabank
 
 ```{r}
-lims_missing_in_fieldwork <- data_lims |> 
+lims_missing_in_fieldwork <- lims_sampleresults |> 
   select(-c(
     Component, chem_variable, unit, OriginalResult, Result,  value, isBelowLOQ, LOQ
   )) |> 
   distinct() |> 
   filter(
     !is.na(recipient_code),
-    !recipient_code %in% sampling_visits$recipient_code
+    !recipient_code %in% gw_samples$recipient_code
   )
 lims_missing_in_fieldwork
 ```
 
-## Results below the quantification limit
+**Results below the quantification limit**
 
 Number of samples below the threshold by chemical variable
 
 ```{r}
-lims_below_loq_overview <- data_lims |>
+lims_below_loq_overview <- lims_sampleresults |>
   count(chem_variable, isBelowLOQ, name = "nr_results") |>
   arrange(chem_variable, isBelowLOQ)
 lims_below_loq_overview
@@ -977,7 +684,7 @@ lims_below_loq_overview
 Detailed info of the 'isBelowLOQ' samples
 
 ```{r}
-lims_below_loq_details <- data_lims |>
+lims_below_loq_details <- lims_sampleresults |>
   filter(isBelowLOQ == TRUE) |>
   select(
     recipient_code, FieldSampleID, FieldSamplingDate,
@@ -987,12 +694,15 @@ lims_below_loq_details <- data_lims |>
 lims_below_loq_details
 ```
 
-## Combined data
+## Chemical variables
+
+Analysis of combined groundwater data (from veldwerkdatabank) and LIMS
+data.
 
 ```{r}
-data_chemical_variables <- sampling_visits |> 
+data_chemical_variables <- gw_samples |> 
   inner_join(
-    data_lims,
+    lims_sampleresults,
     by = c("recipient_code")
   ) |> arrange(
     in_lims,
@@ -1153,7 +863,7 @@ plot_chem_var <- function(data, selected_variables = NULL) {
 }
 ```
 
-### Overall distribution
+**Overall distribution**
 
 ```{r}
 plot_chem_overall <- plot_chem_var(base_chem)
@@ -1165,7 +875,7 @@ plot_chem_selected <- plot_chem_var(base_chem, c("N-NH4", "N-NO3"))
 plot_chem_selected
 ```
 
-### Distribution by typegroup
+**Distribution by typegroup**
 
 ```{r}
 plot_list <- base_chem_filtered %>%
@@ -1232,13 +942,14 @@ report_plots <- list(
   "locevals_by_scheme_facets.png" = plot_locevals_by_scheme_facets,
   "surface_water_visits.png" = plot_surface_water_visits,
   "chemistry_overall_distribution.png" = plot_chem_overall,
-  "chemistry_nitrogen_distribution.png" = plot_chem_selected
+  "chemistry_nitrogen_distribution.png" = plot_chem_selected,
+  "plot_soil_evals_approved.png" = plot_soil_evals_approved
 )
 
 report_plot_dimensions <- tibble(
   filename = names(report_plots),
-  width = c(8, 8, 8, 8, 9, 9),
-  height = c(4, 4, 11, 4, 6, 6)
+  width = c(8, 8, 8, 8, 9, 9, 8),
+  height = c(4, 4, 11, 4, 6, 6, 4)
 )
 
 iwalk(report_plots, \(plot, filename) {

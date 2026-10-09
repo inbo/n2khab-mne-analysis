@@ -1,0 +1,418 @@
+---
+title: "vorapas-db-queries"
+format: html
+---
+
+# Setup script
+
+This part contains connection function and necessary packages used in the notebook. If this becomes to exhaustive, it can be added to a separate script.
+
+```{r}
+library(inbolims)
+library(dplyr)
+library(tidyverse)
+library(sf)
+library(giscoR)
+library(n2khab)
+library(ggplot2)
+library(purrr)
+library(scales)
+```
+
+```{r}
+veldwerk_connect <- function(dbname) {
+  # Read credentials from environment variables (.Renviron)
+  host <- Sys.getenv("VELDWERK_HOST")
+  port <- Sys.getenv("VELDWERK_PORT")
+  user <- Sys.getenv("VELDWERK_USER")
+  pass <- Sys.getenv("VELDWERK_PASS")
+  
+  # Check to ensure credentials are set
+  if (host == "" || user == "" || pass == "") {
+    stop("Database credentials are missing. Check your .Renviron file.")
+  }
+  
+  DBI::dbConnect(
+    drv      = RPostgres::Postgres(),
+    dbname   = dbname,
+    host     = host,
+    port     = port,
+    user     = user,
+    password = pass
+  )
+}
+```
+
+# Database connections
+
+```{r}
+con_gw <- veldwerk_connect("mnmgwdb")
+con_surf <- veldwerk_connect("mnmsurfdb")
+con_le <- veldwerk_connect("loceval")
+con_lims <- lims_connect()
+```
+
+```{r}
+# library(DBI)
+# dbDisconnect(con_gw)
+# dbDisconnect(con_surf)
+# dbDisconnect(con_le)
+# dbDisconnect(con_lims)
+```
+
+# Input Data
+
+## Locevals
+
+le_fieldwork
+
+```{sql}
+--| connection: con_le
+--| output.var: le_fieldwork
+
+WITH BASE AS (
+  SELECT 
+    ST_AsText(LOC.wkb_geometry) AS wkb_geometry
+    , LOC.grts_address
+    , LOC.location_id
+    , SU.sampleunit_id
+    , V.date_visit
+    , V.type
+    , V.type_assessed
+    , V.notes
+    , V.issues
+    , V.visit_done
+    , SU.is_replaced
+    , SU.type_is_absent
+    , R.grts_address_replacement
+    , R.is_selected
+    , unnest(string_to_array(SU.schemes, '|')) AS scheme
+    , 1 as loceval
+    , CASE
+        WHEN V.issues THEN 0
+        WHEN SU.type_is_absent THEN  0
+        ELSE 1
+      END AS loceval_approved
+  FROM "metadata"."Locations" LOC
+  INNER JOIN "inbound"."Visits" V
+  ON LOC.location_id = V.location_id AND LOC.grts_address = V.grts_address
+  INNER JOIN "outbound"."SampleUnits" SU
+  ON V.sampleunit_id = SU.sampleunit_id
+  LEFT JOIN "outbound"."Replacements" R
+  ON SU.replacement_id = R.replacement_id
+  WHERE V.visit_done
+)
+
+SELECT * 
+FROM BASE
+WHERE scheme IN ('GW_03.3', 'SOIL_03.2', 'SURF_03.4_lentic')
+AND (date_visit IS NULL OR date_visit <  '2026-09-26')
+```
+
+## Groundwater
+
+gw_fieldwork
+
+```{sql}
+--| connection: con_gw
+--| output.var: gw_fieldwork
+
+WITH sampling_visits AS  (
+  SELECT 
+  SV.location_id
+  , SV.sampleunit_id
+  , SV.visit_done
+  , SV.date_visit
+  , SV.project_code
+  , CASE 
+  WHEN SV.recipient_code = '26-08679' THEN '26-008679' 
+  --    WHEN SV.grts_address = '35039538' THEN NULL
+  ELSE SV.recipient_code 
+  END as recipient_code
+  FROM  "inbound"."SamplingVisits" SV
+  INNER JOIN "outbound"."FieldCalendars" FC
+  ON SV.fieldcalendar_id = FC.fieldcalendar_id
+  WHERE NOT SV.issues
+  AND SV.visit_done
+  AND NOT FC.excluded
+  AND (SV.date_visit IS NULL OR SV.date_visit <  '2026-09-26')
+)
+
+SELECT 
+ST_AsText(LOC.wkb_geometry) AS wkb_geometry
+, LOC.location_id
+, LOC.grts_address
+, IV.stratum
+, IV.sampleunit_id
+, IV.date_visit as installation_date
+, SV.date_visit as sampling_date
+, COALESCE(SUM(CAST(SV.visit_done as INT)), 0) as nr_visits
+, TRUE AS is_installed
+, CASE WHEN SUM(CAST(SV.visit_done as INT)) > 0 THEN TRUE ELSE FALSE END AS is_sampled
+, IV.watina_code_used_1_peilbuis
+, IV.watina_code_used_2_piezometer
+, SV.project_code
+, SV.recipient_code
+FROM "metadata"."Locations" LOC
+INNER JOIN "inbound"."InstallationVisits" IV
+ON LOC.location_id = IV.location_id AND LOC.grts_address = IV.grts_address
+INNER JOIN "outbound"."FieldCalendars" FC
+ON IV.fieldcalendar_id = FC.fieldcalendar_id
+LEFT JOIN sampling_visits SV
+ON IV.location_id = SV.location_id AND IV.sampleunit_id = SV.sampleunit_id
+WHERE NOT IV.issues
+AND IV.visit_done
+AND NOT FC.excluded
+AND (IV.date_visit IS NULL OR IV.date_visit <  '2026-09-26')
+GROUP BY 
+LOC.wkb_geometry
+, LOC.location_id
+, LOC.grts_address
+, IV.stratum
+, IV.sampleunit_id
+, IV.date_visit
+, SV.date_visit
+, IV.watina_code_used_1_peilbuis
+, IV.watina_code_used_2_piezometer
+, SV.project_code
+, SV.recipient_code
+ORDER BY is_sampled
+```
+
+gw_types
+
+```{sql}
+--| connection: con_gw
+--| output.var: gw_types
+
+SELECT DISTINCT stratum, type, main_type
+FROM "metadata"."N2kHabStrata"
+```
+
+gw_domains
+
+```{sql}
+--| connection: con_gw
+--| output.var: gw_domains
+
+SELECT 
+    DISTINCT grts_address, domain_part,
+    CASE 
+        WHEN domain_part = 'BE2100015' THEN 'Kalmthoutse Heide'
+        WHEN domain_part = 'BE2100024' THEN 'Turnhouts Vennengebied'
+        WHEN domain_part = 'BE2200028' THEN 'Mechelse Heide'
+        WHEN domain_part = 'BE2200035' THEN 'Voerstreek'
+        WHEN domain_part = 'BE2200039' THEN 'De Maten'
+        WHEN domain_part = 'Flanders_remainder' THEN 'Overig Vlaanderen'
+        WHEN domain_part = 'SAC_network_remainder' THEN 'Overig SBZ-H'
+        ELSE domain_part
+    END AS domain_name
+FROM "outbound"."SampleUnits"
+WHERE schemes = 'GW_03.3'
+AND domain_part IS NOT NULL
+```
+
+## Surface water
+
+surf_fieldwork
+
+```{sql}
+--| connection: con_surf
+--| output.var: surf_fieldwork
+
+SELECT 
+  ---LV.*
+  ST_AsText(LOC.wkb_geometry) AS wkb_geometry
+  , LOC.grts_address
+  , LV.sampleunit_id
+  , LV.stratum
+  , LV.date_start
+  , LV.date_visit
+  --, LV.log_user -- GDPR: remove personal information
+  , LV.notes
+  , sampling_done
+FROM "metadata"."Locations" LOC
+INNER JOIN "inbound"."VisitsUnnested" LV
+ON LOC.location_id = LV.location_id AND LOC.grts_address = LV.grts_address
+INNER JOIN "outbound"."FieldCalendars" FC
+ON LV.visit_id = FC.visit_id AND LV.fieldcalendar_id = FC.fieldcalendar_id
+WHERE NOT LV.issues
+AND LV.visit_done
+AND NOT FC.excluded
+AND (LV.date_visit IS NULL OR LV.date_visit <  '2026-09-26')
+ORDER BY grts_address, stratum
+```
+
+## Lims
+
+lims_sampleresults
+
+```{sql}
+--| connection: con_lims
+--| output.var: lims_sampleresults
+
+WITH RankedResults AS (
+    SELECT 
+      r.Project
+      , s.LabSampleID
+      , r.Customer
+      , s.FieldSampleID
+      , s.FieldSamplingDate
+      --, s.FieldObserver -- GDPR: remove personal information
+      , r.Component
+      , u.Unit
+      , r.Result as OriginalResult
+      , TRY_CAST(REPLACE(r.Result, ',', '.') AS FLOAT) AS Result
+      , CASE
+          WHEN r.Component = 'NH4' THEN 0.776
+          WHEN r.Component = 'NO3' THEN 0.226
+          WHEN r.Component = 'PO4' THEN 0.326
+          ELSE 1.0
+        END AS ConversionFactor
+      , r.isBelowLOQ
+      , cmp.LOQ
+      , CAST(REPLACE(REPLACE(REPLACE(cmp.LOQ, '<', ''), ' ', ''), ',', '.') AS FLOAT) AS LOQValue
+      , s.SampleStatus
+      , r.ResultStatus
+      , p.ProjectStatus
+      , s.SampleType
+      , ROW_NUMBER() OVER (
+          PARTITION BY r.Project, s.LabSampleID, r.Component
+          ORDER BY 
+              p.ProjectStatus DESC,   -- MIN ProjectStatus (bijv. 'V' boven 'C')
+              s.SampleStatus ASC,  -- MAX SampleStatus (bijv. 'A' boven 'C')
+              r.ResultStatus ASC   -- MAX ResultStatus (bijv. 'A' boven 'E')
+        ) AS rn
+    FROM dimSample s 
+    LEFT JOIN factResult r ON r.SampleKey = s.SampleKey 
+    INNER JOIN dimProject p ON r.ProjectKey = p.ProjectKey 
+    INNER JOIN dimComponent cmp ON r.ComponentKey = cmp.ComponentKey 
+    INNER JOIN dimUnit u ON r.UnitKey = u.UnitKey 
+    WHERE (r.Project LIKE 'V-25W016%' OR r.Project LIKE 'V-26W012%')
+      --AND r.ResultStatus != 'X'
+      AND r.Component IN ('NH4', 'NO3', 'PO4', 'SO4')
+      AND (s.SampleType IS NULL OR s.SampleType in ('Project'))
+      AND r.IsReportable = 1
+)
+SELECT 
+  Project as project_code_lims
+  , LabSampleID as recipient_code
+  , Component
+  --, rn
+  , CASE
+      WHEN Component = 'NH4' THEN 'N-NH4'
+      WHEN Component = 'NO3' THEN 'N-NO3'
+      WHEN Component = 'PO4' THEN 'P-PO4'
+      ELSE Component
+    END as chem_variable
+  , ProjectStatus
+  , SampleStatus
+  , ResultStatus
+  , Customer
+  , FieldSampleID
+  , FieldSamplingDate
+  --, FieldObserver
+  , Unit as unit
+  , OriginalResult
+  , Result
+  , CASE 
+      WHEN isBelowLOQ = 1 
+      THEN LOQValue 
+      ELSE Result 
+    END * ConversionFactor AS value
+  , isBelowLOQ
+  , LOQ
+  , LOQValue
+  , 'available' as in_lims
+FROM RankedResults
+WHERE rn = 1
+ORDER BY Project, LabSampleID, Component
+```
+
+## Rep
+
+rep_types
+
+```{r}
+rep_types <- n2khabmon::read_scheme_types(lang = "nl") |> 
+  filter(.data$scheme == 'GW_03.3')
+```
+
+rep_sbz
+
+```{r}
+rep_sbz <- n2khab::read_admin_areas(dsn = "sac")
+```
+
+## Gisco
+
+vlaanderen_provincies
+
+```{r}
+vlaanderen_provincies <- gisco_get_nuts(
+  country = "Belgium",
+  nuts_level = 2,
+  resolution = "01"
+) %>%
+  filter(NUTS_NAME %in% c(
+    "Prov. Antwerpen"
+    , "Prov. Limburg (BE)"
+    , "Prov. Oost-Vlaanderen"
+    , "Prov. Vlaams-Brabant"
+    , "Prov. West-Vlaanderen"
+  )) %>%
+  st_transform(crs = 31370)
+```
+
+# Create snapshots
+
+```{r}
+snapshot_dir <- here::here(
+  "data", "snapshots", "vora-pas-2026-09-26"
+)
+dir.create(snapshot_dir, recursive = TRUE, showWarnings = FALSE)
+
+snapshots <- list(
+  le_fieldwork = le_fieldwork,
+  gw_fieldwork = gw_fieldwork,
+  gw_types = gw_types,
+  gw_domains = gw_domains,
+  surf_fieldwork = surf_fieldwork,
+  lims_sampleresults = lims_sampleresults,
+  rep_types = rep_types,
+  rep_sbz = rep_sbz,
+  vlaanderen_provincies = vlaanderen_provincies
+)
+
+for (name in names(snapshots)) {
+  saveRDS(
+    snapshots[[name]],
+    file.path(snapshot_dir, paste0(name, ".rds")),
+    version = 3
+  )
+}
+```
+
+# Snapshot field overview
+
+```{r}
+snapshot_files <- list.files(
+  snapshot_dir,
+  pattern = "\\.rds$",
+  full.names = TRUE
+)
+
+snapshot_field_overview <- purrr::map_dfr(snapshot_files, function(path) {
+  snapshot <- readRDS(path)
+
+  tibble::tibble(
+    dataset = tools::file_path_sans_ext(basename(path)),
+    field = names(snapshot)
+  )
+})
+
+knitr::kable(
+  snapshot_field_overview,
+  caption = "Fields included in each saved data snapshot."
+)
+```

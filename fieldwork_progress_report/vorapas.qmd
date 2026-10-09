@@ -105,9 +105,9 @@ WITH BASE AS (
     , unnest(string_to_array(SU.schemes, '|')) AS scheme
     , 1 as loceval
     , CASE
-        WHEN V.issues THEN 0
-        WHEN SU.type_is_absent THEN  0
-        ELSE 1
+        WHEN V.issues THEN FALSE
+        WHEN SU.type_is_absent THEN FALSE
+        ELSE ((V.type_assessed IS NULL) OR (V.type_assessed = V.type))
       END AS loceval_approved
   FROM "metadata"."Locations" LOC
   INNER JOIN "inbound"."Visits" V
@@ -332,7 +332,8 @@ SELECT
   , IV.date_visit as installation_date
   , COALESCE(SUM(CAST(SV.visit_done as INT)), 0) as nr_visits
   , TRUE AS is_installed
-  , CASE WHEN SUM(CAST(SV.visit_done as INT)) > 0 THEN TRUE ELSE FALSE END AS is_sampled
+  -- , CASE WHEN SUM(CAST(SV.visit_done as INT)) > 0 THEN TRUE ELSE FALSE END AS is_sampled
+  , BOOL_OR(COALESCE(SV.visit_done, FALSE)) AS is_sampled
   , IV.watina_code_used_1_peilbuis
   , IV.watina_code_used_2_piezometer
   , SV.recipient_code
@@ -357,6 +358,7 @@ GROUP BY
   , IV.watina_code_used_2_piezometer
   , SV.recipient_code
 ORDER BY is_sampled
+
 ```
 
 ### Combined reporting table
@@ -442,7 +444,7 @@ cat(
   nrow(
     gw_locevals
   ),
-  "\nthat can be mathed by type: ",
+  "\nthat can be matched by type: ",
   nrow(
     gw_locevals |> 
       inner_join(
@@ -481,7 +483,7 @@ SELECT
   , LV.date_visit
   , LV.log_user
   , LV.notes
-  , sampling_done
+  , LV.sampling_done
 FROM "metadata"."Locations" LOC
 INNER JOIN "inbound"."VisitsUnnested" LV
 ON LOC.location_id = LV.location_id AND LOC.grts_address = LV.grts_address
@@ -715,9 +717,10 @@ plot_locevals_by_scheme_facets
 
 ### Surface water
 
-A visit is defined as the combination of stratum-location-date (e.g.: as
-on one day the same location is sampled for mutiple strata, this is
-counted as multiple visits)
+> A visit is defined as the combination of stratum-location-date (e.g.: as
+> on one day the same location is sampled for mutiple strata, this is
+> counted as multiple visits)
+
 
 ```{r}
 kaart_sf <- surf_samples |>

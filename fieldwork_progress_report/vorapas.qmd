@@ -1,0 +1,1031 @@
+---
+title: "VORA-PAS 2026: Analysis continuation"
+author: "Droomelot"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    df-print: paged
+execute:
+  warning: false
+  message: false
+  echo: true
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+```{r}
+library(inbolims)
+library(dplyr)
+library(tidyverse)
+library(sf)
+library(giscoR)
+library(n2khab)
+library(ggplot2)
+library(purrr)
+library(scales)
+```
+
+# Purpose
+
+This report delivers the graphs and descriptives for the VORA-pas report
+of 09/2026.
+
+# Data
+
+```{r}
+snapshot_dir <- here::here(
+  "data", "snapshots", "vora-pas-2026-09-26"
+)
+
+le_fieldwork <- readRDS(file.path(snapshot_dir, "le_fieldwork.rds"))
+gw_fieldwork <- readRDS(file.path(snapshot_dir, "gw_fieldwork.rds"))
+gw_types <- readRDS(file.path(snapshot_dir, "gw_types.rds"))
+gw_domains <- readRDS(file.path(snapshot_dir, "gw_domains.rds"))
+surf_fieldwork <- readRDS(file.path(snapshot_dir, "surf_fieldwork.rds"))
+lims_sampleresults <- readRDS(file.path(snapshot_dir, "lims_sampleresults.rds"))
+rep_types <- readRDS(file.path(snapshot_dir, "rep_types.rds"))
+rep_sbz <- readRDS(file.path(snapshot_dir, "rep_sbz.rds"))
+vlaanderen_provincies <- readRDS(file.path(snapshot_dir, "vlaanderen_provincies.rds"))
+```
+
+# Transformations
+
+```{r}
+gw_locevals <- le_fieldwork |>
+  filter(scheme == 'GW_03.3')
+
+lims_ids <- lims_sampleresults |> 
+  select(recipient_code) |>
+  distinct() |> 
+  add_column(in_lims = 1)
+
+gw_samples <- gw_fieldwork |> 
+  filter(is_sampled) |> 
+  select(
+    sampleunit_id
+    , location_id
+    , grts_address
+    , sampling_date,
+    , stratum
+    , project_code
+    , recipient_code
+  )
+```
+
+# Analysis
+
+## Loceval
+
+**Total locevals**
+
+```{r}
+loceval_overview <- le_fieldwork |>
+  summarise(
+    total_locevals_over_schemes = n(),
+    distinct_locevals = n_distinct(location_id, sampleunit_id),
+    distinct_locations = n_distinct(grts_address)
+  )
+
+loceval_overview
+```
+
+**Locevals by scheme**
+
+```{r}
+loceval_by_scheme <- le_fieldwork |>
+  group_by(scheme) |>
+  summarise(
+    nr_locevals = sum(loceval),
+    distinct_locations = n_distinct(grts_address),
+    nr_approved_locevals = sum(loceval_approved)
+  )
+loceval_by_scheme
+```
+
+**Locevals by category**
+
+```{r}
+loceval_by_category <- le_fieldwork |>
+  group_by(issues, type_is_absent, is_replaced) |>
+  summarise(
+    nr_locevals = sum(loceval),
+    nr_approved_locevals = sum(loceval_approved),
+    distinct_locations = n_distinct(grts_address),
+    .groups = "drop"
+  ) |>
+  arrange(desc(issues), type_is_absent, is_replaced)
+loceval_by_category
+```
+
+Interpretation:
+
+- `issues = TRUE`: problematic visit; status undecided (in progress).
+- `type_is_absent = FALSE`, `is_replaced = FALSE`: expected type
+  present, no replacement –\> approved
+- `type_is_absent = FALSE`, `is_replaced = TRUE`: expected type present
+  with a local replacement –\> approved
+- `type_is_absent = TRUE`, `is_replaced = FALSE`: expected type absent
+  without possible replacement
+
+\*\*Locevals with inconsistent data\*\* –\> in the report we use the
+above interpretation
+
+```{r}
+loceval_inconsistent_data <- le_fieldwork |>
+  filter(
+    !issues,
+    (
+      (!type_is_absent & (is.na(type_assessed) | !coalesce(str_detect(type_assessed, fixed(type)) | str_detect(type, fixed(type_assessed)), FALSE))) |
+        (type_is_absent & type == type_assessed)
+    )
+  ) |>
+  select(
+    scheme, grts_address, sampleunit_id, type, type_assessed, type_is_absent,
+    is_replaced, date_visit, notes
+  ) |>
+  arrange(scheme, date_visit)
+loceval_inconsistent_data
+```
+
+## Groundwater
+
+**Total executed installations**
+
+An executed installation is linked to a field calendar that
+
+- is not excluded
+- has a completed visit,
+- and has no reported issue.
+
+```{r}
+gw_installation_summary <- gw_fieldwork |>
+  summarise(
+    # nr_installation_rows = n(),
+    nr_sample_units = n_distinct(sampleunit_id),
+    nr_locations = n_distinct(grts_address),
+    nr_piezometers = n_distinct(watina_code_used_2_piezometer, na.rm = TRUE),
+    nr_peilbuizen = n_distinct(watina_code_used_1_peilbuis, na.rm = TRUE)
+  )
+gw_installation_summary
+```
+
+**Installation counts by domain and typegroup**
+
+The domain mapping groups fieldwork locations into the reporting areas.
+Locations without a domain part are excluded from the grouped summary.
+
+```{r}
+gw_basetable <- gw_fieldwork |> 
+  inner_join(
+    gw_types,
+    by = "stratum"
+  ) |> 
+  inner_join(
+    rep_types,
+    by = "type"
+  ) |> 
+  inner_join(
+    gw_domains,
+    by = "grts_address"
+  ) |> 
+  left_join(
+    lims_ids,
+    by = "recipient_code"
+  ) |>
+  replace_na(list(
+    in_lims =  0
+  ))
+```
+
+```{r}
+gw_locevals_by_group <- gw_locevals |> 
+  inner_join(
+    rep_types,
+    by = "type"
+  ) |> 
+  inner_join(
+    gw_domains,
+    by = "grts_address"
+  ) |> 
+  group_by(
+    typegroup_name, domain_name
+  ) |> 
+  summarise(
+    nr_locevals = sum(loceval),
+    nr_approved_locevals = sum(loceval_approved)
+  )
+
+gw_installations_by_group <- gw_basetable |> 
+  group_by(
+    typegroup_name, domain_name
+  ) |> 
+  summarise(
+    nr_instalations = n(),
+    nr_visits = sum(nr_visits),
+    nr_available_in_lims = sum(in_lims)
+  )
+
+gw_numbers <- gw_locevals_by_group |>
+  left_join(
+    gw_installations_by_group,
+    by = c("typegroup_name", "domain_name")
+  ) |> 
+  arrange(typegroup_name, domain_name) |> 
+  replace_na(list(
+    nr_instalations = 0,
+    nr_visits = 0,
+    nr_available_in_lims = 0
+  ))
+```
+
+```{r}
+gw_numbers
+```
+
+```{r}
+sum(gw_numbers$nr_locevals)
+# not all locevals can be matched (missing 70) 
+# -->  due to missing domain name of grts_address
+# (see next code block)
+```
+
+```{r}
+cat(
+  "All gw locevals: ",
+  nrow(
+    gw_locevals
+  ),
+  "\nthat can be mathed by type: ",
+  nrow(
+    gw_locevals |> 
+      inner_join(
+        rep_types,
+        by = "type"
+      )
+  ),
+  "\nthat can be matched to domain: ",
+  nrow(
+    gw_locevals |> 
+      inner_join(
+        rep_types,
+        by = "type"
+      ) |> 
+      inner_join(
+        gw_domains,
+        by = "grts_address"
+      )
+  )
+)
+```
+
+## Surface water
+
+**Total sampled locations**
+
+```{r}
+surf_overview <- surf_fieldwork |>
+  summarise(
+    nr_samples = n(),
+    nr_sample_units = n_distinct(sampleunit_id),
+    nr_locations = n_distinct(grts_address)
+  )
+surf_overview
+```
+
+## Spatial overview
+
+```{r}
+inbo_roze <- "#C04384"
+inbo_blauw <- "#356196"
+inbo_paars <- "#843860"
+inbo_groen <- "#C2C444"
+```
+
+**Groundwater installations and samples**
+
+```{r}
+kaart_sf <- gw_fieldwork %>%
+  filter(!is.na(wkb_geometry)) %>%
+  st_as_sf(wkt = "wkb_geometry", crs = 31370)
+```
+
+```{r}
+#| fig-height: 4
+#| fig-width: 8
+
+plot_gw_installations_samples <- ggplot() +
+  # Laag 0: Omtrek en provinciegrenzen van Vlaanderen
+  geom_sf(
+    data = vlaanderen_provincies,
+    fill = "white",
+    color = "grey55",
+    linewidth = 0.35
+  ) +
+  # Laag 1: SBZ-H gebieden
+  geom_sf(
+    data = rep_sbz,
+    fill = "grey75",
+    color = "grey75",
+    alpha = 0.25,
+    linewidth = 0.25
+  ) +
+  # Laag 1: Installaties
+  geom_sf(
+    data = kaart_sf,
+    aes(color = "Installatie", shape = "Installatie"),
+    size = 3
+  ) +
+  # Laag 2: Bemonstering
+  geom_sf(
+    data = filter(kaart_sf, is_sampled == TRUE),
+    aes(color = "Bemonstering", shape = "Bemonstering"),
+    size = 2
+  ) +
+  scale_color_manual(
+    name   = NULL,
+    values = c("Installatie" = inbo_groen, "Bemonstering" = inbo_paars),
+    breaks = c("Installatie", "Bemonstering")
+  ) +
+  scale_shape_manual(
+    name   = NULL,
+    values = c("Installatie" = 15, "Bemonstering" = 18),
+    breaks = c("Installatie", "Bemonstering")
+  ) +
+  
+  # Stijl en opmaak
+  theme_void() +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.border     = element_rect(color = "black", fill = NA, linewidth = 0.6),
+    plot.margin      = margin(8, 8, 8, 8),
+    legend.position  = "bottom"
+  )
+
+plot_gw_installations_samples
+```
+
+**Locevals by scheme**
+
+```{r}
+locevals_sf <- le_fieldwork |>
+  filter(!is.na(wkb_geometry)) |>
+  st_as_sf(wkt = "wkb_geometry", crs = 31370)
+
+scheme_colors <- c(
+  "GW_03.3"          = inbo_groen,
+  "SOIL_03.2"        = inbo_roze,
+  "SURF_03.4_lentic" = inbo_blauw
+)
+
+scheme_shapes <- c(
+  "GW_03.3"          = 15,  # square
+  "SOIL_03.2"        = 17,  # triangle
+  "SURF_03.4_lentic" = 16   # circle
+)
+
+# Rarest scheme last -> plotted on top, so it isn't hidden by the others
+scheme_order <- le_fieldwork |>
+  count(scheme) |>
+  arrange(desc(n)) |>
+  pull(scheme)
+
+locevals_sf <- locevals_sf |>
+  mutate(scheme = factor(scheme, levels = scheme_order)) |>
+  arrange(scheme)
+```
+
+```{r}
+#| fig-height: 4
+#| fig-width: 8
+
+plot_locevals_by_scheme <- ggplot() +
+  # Laag 0: Omtrek en provinciegrenzen van Vlaanderen
+  geom_sf(
+    data = vlaanderen_provincies,
+    fill = "white",
+    color = "grey55",
+    linewidth = 0.35
+  ) +
+  # Laag 1: SBZ-H gebieden
+  geom_sf(
+    data = rep_sbz,
+    fill = "grey75",
+    color = "grey75",
+    alpha = 0.25,
+    linewidth = 0.25
+  ) +
+  # Laag 2: Locevals, per scheme (rarest on top)
+  geom_sf(
+    data = locevals_sf,
+    aes(color = scheme, shape = scheme,  size = scheme)
+  ) +
+  scale_color_manual(values = scheme_colors, name = "Scheme") +
+  scale_shape_manual(values = scheme_shapes, name = "Scheme") +
+  scale_size_manual(values = c(3, 2, 1.5), name = "Scheme") +
+  
+  # Stijl en opmaak
+  theme_void() +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.border     = element_rect(color = "black", fill = NA, linewidth = 0.6),
+    panel.spacing    = unit(1.5, "lines"),
+    plot.margin      = margin(8, 8, 8, 8),
+    legend.position  = "bottom"
+  )
+
+plot_locevals_by_scheme
+```
+
+```{r}
+#| fig-height: 11
+#| fig-width: 8
+
+plot_locevals_by_scheme_facets <- ggplot() +
+  # Laag 0: Omtrek en provinciegrenzen van Vlaanderen
+  geom_sf(
+    data = vlaanderen_provincies,
+    fill = "white",
+    color = "grey55",
+    linewidth = 0.35
+  ) +
+  # Laag 1: SBZ-H gebieden
+  geom_sf(
+    data = rep_sbz,
+    fill = "grey75",
+    color = "grey75",
+    alpha = 0.25,
+    linewidth = 0.25
+  ) +
+  # Laag 2: Locevals, one panel per scheme
+  geom_sf(
+    data = locevals_sf,
+    aes(color = scheme, shape = scheme),
+    size = 3,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = scheme_colors) +
+  scale_shape_manual(values = scheme_shapes) +
+  facet_wrap(~ scheme, ncol=1) +
+  
+  # Stijl en opmaak
+  theme_void() +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.border     = element_rect(color = "black", fill = NA, linewidth = 0.6),
+    panel.spacing    = unit(1.5, "lines"),
+    plot.margin      = margin(8, 8, 8, 8),
+    strip.text       = element_text(face = "bold")
+  )
+
+plot_locevals_by_scheme_facets
+```
+
+**Locevals for soil**
+
+```{r}
+#| fig-height: 4
+#| fig-width: 8
+
+# Filter for the SOIL scheme first
+soil_locevals_sf <- filter(locevals_sf, scheme == "SOIL_03.2")
+
+plot_soil_evals_approved <- ggplot() +
+  # Laag 0: Omtrek en provinciegrenzen van Vlaanderen
+  geom_sf(
+    data = vlaanderen_provincies,
+    fill = "white",
+    color = "grey55",
+    linewidth = 0.35
+  ) +
+  # Laag 1: SBZ-H gebieden
+  geom_sf(
+    data = rep_sbz,
+    fill = "grey75",
+    color = "grey75",
+    alpha = 0.25,
+    linewidth = 0.25
+  ) +
+  # Laag 2: Afgekeurde locaties
+  geom_sf(
+    data = filter(soil_locevals_sf, loceval_approved == 0),
+    aes(color = "Geëvalueerd en afgekeurd", shape = "Geëvalueerd en afgekeurd"),
+    size = 2.5
+  ) +
+  # Laag 3: Geschikte locaties
+  geom_sf(
+    data = filter(soil_locevals_sf, loceval_approved == 1),
+    aes(color = "Geëvalueerd en geschikt", shape = "Geëvalueerd en geschikt"),
+    size = 2.5
+  ) +
+  scale_color_manual(
+    name   = NULL,
+    values = c("Geëvalueerd en afgekeurd" = "grey50", "Geëvalueerd en geschikt" = inbo_roze),
+    breaks = c("Geëvalueerd en afgekeurd", "Geëvalueerd en geschikt")
+  ) +
+  scale_shape_manual(
+    name   = NULL,
+    values = c("Geëvalueerd en afgekeurd" = 17, "Geëvalueerd en geschikt" = 17), # Solid triangles for both categories
+    breaks = c("Geëvalueerd en afgekeurd", "Geëvalueerd en geschikt")
+  ) +
+  
+  # Stijl en opmaak
+  theme_void() +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.border     = element_rect(color = "black", fill = NA, linewidth = 0.6),
+    plot.margin      = margin(8, 8, 8, 8),
+    legend.position  = "bottom"
+  )
+
+plot_soil_evals_approved
+```
+
+**Surface water**
+
+A visit is defined as the combination of stratum-location-date (e.g.: as
+on one day the same location is sampled for mutiple strata, this is
+counted as multiple visits)
+
+```{r}
+kaart_sf <- surf_fieldwork |>
+  filter(!is.na(wkb_geometry)) |>
+  distinct(grts_address, wkb_geometry) |>
+  st_as_sf(wkt = "wkb_geometry", crs = 31370)
+```
+
+```{r}
+#| fig-height: 4
+#| fig-width: 8
+
+plot_surface_water_visits <- ggplot() +
+  # Laag 0: Omtrek en provinciegrenzen van Vlaanderen
+  geom_sf(
+    data = vlaanderen_provincies,
+    fill = "white",
+    color = "grey55",
+    linewidth = 0.35
+  ) +
+  # Laag 1: SBZ-H gebieden
+  geom_sf(
+    data = rep_sbz,
+    fill = "grey75",
+    color = "grey75",
+    alpha = 0.25,
+    linewidth = 0.25
+  ) +
+  # Laag 2: Lentic visits (fixed appearance, no legend)
+  geom_sf(
+    data = kaart_sf,
+    color = inbo_blauw,
+    shape = 16,
+    size = 2.5
+  ) +
+  
+  # Stijl en opmaak
+  theme_void() +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.border     = element_rect(color = "black", fill = NA, linewidth = 0.6),
+    plot.margin      = margin(8, 8, 8, 8),
+    legend.position  = "none"
+  )
+
+plot_surface_water_visits
+```
+
+## LIMS
+
+**Approved sampling visits**
+
+```{r}
+gw_sampling_overview <- gw_samples |> 
+  summarise(
+    nr_visits = n(),
+    nr_locations = n_distinct(grts_address),
+    nr_missing_recipient_codes = sum(is.na(recipient_code))
+  )
+gw_sampling_overview
+```
+
+**Unapproved records**
+
+```{r}
+lims_unapproved_data <- lims_sampleresults |> 
+  filter(
+    ProjectStatus != 'V' | SampleStatus != 'A' | ResultStatus != 'A'
+  ) |> 
+  select(
+    project_code_lims
+    , recipient_code
+    , ProjectStatus
+    , SampleStatus
+    , FieldSamplingDate
+  ) |> 
+  distinct()
+lims_unapproved_data
+```
+
+**Recipient codes that cannot be linked**
+
+Missing ids in veldwerkdatabank
+
+```{r}
+gw_samples_missing_id <- gw_samples |> 
+  filter(
+    is.na(recipient_code)
+  )
+gw_samples_missing_id
+```
+
+In veldwerkdatabank, but not in LIMS
+
+```{r}
+gw_samples_missing_in_lims <- gw_samples |> 
+  filter(
+    !is.na(recipient_code),
+    !recipient_code %in% lims_sampleresults$recipient_code
+  )
+gw_samples_missing_in_lims
+```
+
+In LIMS, but not in veldwerkdatabank
+
+```{r}
+lims_missing_in_fieldwork <- lims_sampleresults |> 
+  select(-c(
+    Component, chem_variable, unit, OriginalResult, Result,  value, isBelowLOQ, LOQ
+  )) |> 
+  distinct() |> 
+  filter(
+    !is.na(recipient_code),
+    !recipient_code %in% gw_samples$recipient_code
+  )
+lims_missing_in_fieldwork
+```
+
+**Results below the quantification limit**
+
+Number of samples below the threshold by chemical variable
+
+```{r}
+lims_below_loq_overview <- lims_sampleresults |>
+  count(chem_variable, isBelowLOQ, name = "nr_results") |>
+  arrange(chem_variable, isBelowLOQ)
+lims_below_loq_overview
+```
+
+Detailed info of the 'isBelowLOQ' samples
+
+```{r}
+lims_below_loq_details <- lims_sampleresults |>
+  filter(isBelowLOQ == TRUE) |>
+  select(
+    recipient_code, FieldSampleID, FieldSamplingDate,
+    Component, unit, OriginalResult, Result, LOQ,
+    chem_variable, value
+  )
+lims_below_loq_details
+```
+
+## Chemical variables
+
+Analysis of combined groundwater data (from veldwerkdatabank) and LIMS
+data.
+
+```{r}
+data_chemical_variables <- gw_samples |> 
+  inner_join(
+    lims_sampleresults,
+    by = c("recipient_code")
+  ) |> arrange(
+    in_lims,
+    recipient_code
+  )
+```
+
+Are there samples with negative values (should be zero)?
+
+```{r}
+data_chemical_variables |> 
+  filter(value <= 0)
+```
+
+```{r}
+base_chem <- data_chemical_variables |> 
+  inner_join(
+    gw_types,
+    by = "stratum"
+  ) |> 
+  inner_join(
+    rep_types,
+    by = "type"
+  ) |> 
+  inner_join(
+    gw_domains,
+    by = "grts_address"
+  )
+
+base_chem <- base_chem |> 
+  group_by(
+    typegroup_name, domain_name, grts_address, stratum, chem_variable, unit
+  ) |> 
+  summarise(
+    value = mean(value),
+    nr_obs = n(),
+    .groups = "drop"
+  ) |> 
+  mutate(
+    domain_name = factor(
+      domain_name,
+      levels = c(
+        "Kalmthoutse Heide",
+        "Turnhouts Vennengebied",
+        "Mechelse Heide",
+        "Voerstreek",
+        "De Maten",
+        "Overig SBZ-H",
+        "Overig Vlaanderen"
+      )
+    )
+  )
+
+base_chem_filtered <- base_chem |> 
+  group_by(typegroup_name, domain_name, chem_variable) |> 
+  filter(n() >= 2) |> 
+  ungroup()
+```
+
+```{r}
+base_chem |> 
+  group_by(domain_name) |> 
+  summarize(
+    nr_obs = n_distinct(grts_address)
+  )
+```
+
+```{r}
+domain_colors <- c(
+  "Kalmthoutse Heide"      = "#0072B2",
+  "Turnhouts Vennengebied"  = "#56B4E9",
+  "Mechelse Heide"         = "#CC79A7",
+  "Voerstreek"             = "#009E73",
+  "De Maten"               = "#E69F00",
+  "Overig SBZ-H"           = "#F0E442",
+  "Overig Vlaanderen"      = "#999999"
+)
+
+domain_labels <- c(
+  "Kalmthoutse Heide" = "Kalmthoutse\nHeide",
+  "Turnhouts Vennengebied" = "Turnhouts\nVennengebied",
+  "Mechelse Heide" = "Mechelse\nHeide",
+  "Voerstreek" = "Voerstreek",
+  "De Maten" = "De Maten",
+  "Overig SBZ-H" = "Overig\nSBZ-H",
+  "Overig Vlaanderen" = "Overig\nVlaanderen"
+)
+
+chem_variable_labels <- c(
+  "N-NH4" = "Ammonium (N-NH4)",
+  "N-NO3" = "Nitraat (N-NO3)",
+  "P-PO4" = "Fosfaat (P-PO4)",
+  "SO4" = "Sulfaat (SO4)"
+)
+
+theme_chem <- function() {
+  theme_bw() +
+    theme(
+      strip.text = element_text(face = "bold", size = 11),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      legend.position = "right"
+    )
+}
+
+get_legend_labels <- function(data) {
+  counts <- data |> 
+    group_by(domain_name) |> 
+    summarize(
+      nr_obs = n_distinct(grts_address)
+    )
+  
+  # Format as "Domain Name (n = XX)"
+  labels <- paste0(counts$domain_name, " (n = ", counts$nr_obs, ")")
+  names(labels) <- counts$domain_name
+  return(labels)
+}
+
+add_observation_counts <- function(plot_data, by_typegroup = FALSE) {
+  if (by_typegroup) {
+    plot_data |>
+      count(typegroup_name, chem_variable, domain_name, name = "nr_observations")
+  } else {
+    plot_data |>
+      count(chem_variable, domain_name, name = "nr_observations")
+  }
+}
+
+plot_chem_var <- function(data, selected_variables = NULL) {
+  plot_data <- data
+  if (!is.null(selected_variables)) {
+    plot_data <- data |> 
+      filter(chem_variable %in% selected_variables)
+  }
+  
+  ggplot(
+    plot_data, 
+    aes(x = domain_name, y = value, fill = domain_name)
+  ) +
+    geom_boxplot(outlier.size = 1.2, alpha = 0.8) +
+    scale_y_log10(labels = label_number()) +
+    scale_fill_manual(
+      values = domain_colors,
+      labels = get_legend_labels(plot_data),
+      name = "Domein"
+    ) +
+    facet_wrap(
+      ~ chem_variable,
+      scales = "free_y",
+      labeller = labeller(chem_variable = chem_variable_labels)
+    ) +
+    labs(
+      title = "Chemische variabelen per domein",
+      x = NULL,
+      y = "concentratie (mg/l)"
+    ) +
+    theme_chem()
+}
+```
+
+**Overall distribution**
+
+```{r}
+plot_chem_overall <- plot_chem_var(base_chem)
+plot_chem_overall
+```
+
+```{r}
+plot_chem_selected <- plot_chem_var(base_chem, c("N-NH4", "N-NO3"))
+plot_chem_selected
+```
+
+**Distribution by typegroup**
+
+```{r}
+plot_list <- base_chem_filtered %>%
+  group_by(typegroup_name, .drop = TRUE) %>%
+  group_split() %>%
+  set_names(map_chr(., ~ as.character(unique(.x$typegroup_name)))) %>%
+  map(~ {
+    current_typegroup <- unique(.x$typegroup_name)
+    
+    plot_chem_var(.x) +
+      labs(subtitle = current_typegroup)
+  })
+```
+
+```{r}
+walk(plot_list, print)
+```
+
+```{r}
+plot_list_selected_var <- base_chem_filtered %>%
+  group_by(typegroup_name, .drop = TRUE) %>%
+  group_split() %>%
+  set_names(map_chr(., ~ as.character(unique(.x$typegroup_name)))) %>%
+  map(~ {
+    current_typegroup <- unique(.x$typegroup_name)
+    
+    plot_chem_var(.x, c("N-NH4", "N-NO3")) +
+      labs(subtitle = current_typegroup)
+  })
+```
+
+```{r}
+walk(plot_list_selected_var, print)
+```
+
+```{r}
+#| label: save-plots
+#| include: false
+
+# plot_output_dir <- "vorapas_output"
+# dir.create(plot_output_dir, showWarnings = FALSE, recursive = TRUE)
+# 
+# save_report_plot <- function(plot, filename, width, height, dpi = 300) {
+#   ggsave(
+#     filename = file.path(plot_output_dir, filename),
+#     plot = plot,
+#     width = width,
+#     height = height,
+#     dpi = dpi,
+#     bg = "white"
+#   )
+# }
+# 
+# safe_plot_filename <- function(name) {
+#   name |>
+#     str_to_lower() |>
+#     str_replace_all("[^[:alnum:]]+", "_") |>
+#     str_replace_all("^_|_$", "")
+# }
+# 
+# report_plots <- list(
+#   "groundwater_installations_samples.png" = plot_gw_installations_samples,
+#   "locevals_by_scheme.png" = plot_locevals_by_scheme,
+#   "locevals_by_scheme_facets.png" = plot_locevals_by_scheme_facets,
+#   "surface_water_visits.png" = plot_surface_water_visits,
+#   "chemistry_overall_distribution.png" = plot_chem_overall,
+#   "chemistry_nitrogen_distribution.png" = plot_chem_selected,
+#   "plot_soil_evals_approved.png" = plot_soil_evals_approved
+# )
+# 
+# report_plot_dimensions <- tibble(
+#   filename = names(report_plots),
+#   width = c(8, 8, 8, 8, 9, 9, 8),
+#   height = c(4, 4, 11, 4, 6, 6, 4)
+# )
+# 
+# iwalk(report_plots, \(plot, filename) {
+#   dimensions <- filter(report_plot_dimensions, filename == !!filename)
+#   save_report_plot(
+#     plot,
+#     filename,
+#     width = dimensions$width,
+#     height = dimensions$height
+#   )
+# })
+# 
+# iwalk(plot_list, \(plot, typegroup_name) {
+#   save_report_plot(
+#     plot,
+#     paste0("chemistry_by_typegroup_", safe_plot_filename(typegroup_name), ".png"),
+#     width = 9,
+#     height = 6
+#   )
+# })
+# 
+# iwalk(plot_list_selected_var, \(plot, typegroup_name) {
+#   save_report_plot(
+#     plot,
+#     paste0("chemistry_nitrogen_by_typegroup_", safe_plot_filename(typegroup_name), ".png"),
+#     width = 9,
+#     height = 6
+#   )
+# })
+```
+
+```{r}
+#| label: write-tables-google-sheet
+#| include: false
+
+# google_sheet_id <- Sys.getenv("VORA_PAS_GOOGLE_SHEET_ID")
+# 
+# tables_to_export <- list(
+#   loceval_overview = loceval_overview,
+#   loceval_by_scheme = loceval_by_scheme,
+#   loceval_by_category = loceval_by_category,
+#   loceval_inconsistent_data = loceval_inconsistent_data,
+#   gw_installation_summary = gw_installation_summary,
+#   gw_numbers = gw_numbers,
+#   surf_overview = surf_overview,
+#   gw_sampling_overview = gw_sampling_overview,
+#   lims_unapproved_data = lims_unapproved_data,
+#   gw_samples_missing_id = gw_samples_missing_id,
+#   gw_samples_missing_in_lims = gw_samples_missing_in_lims,
+#   lims_missing_in_fieldwork = lims_missing_in_fieldwork,
+#   lims_below_loq_overview = lims_below_loq_overview,
+#   lims_below_loq_details = lims_below_loq_details
+# )
+# 
+# prepare_table_for_google_sheets <- function(data) {
+#   data |>
+#     mutate(
+#       across(
+#         where(\(column) inherits(column, "integer64")),
+#         as.character
+#       )
+#     )
+# }
+# 
+# if (nzchar(google_sheet_id)) {
+#   googlesheets4::gs4_auth()
+#   iwalk(tables_to_export, \(data, sheet_name) {
+#     googlesheets4::sheet_write(
+#       data = prepare_table_for_google_sheets(data),
+#       ss = google_sheet_id,
+#       sheet = sheet_name
+#     )
+#   })
+# } else {
+#   message("Set VORA_PAS_GOOGLE_SHEET_ID to write report tables to Google Sheets.")
+# }
+```

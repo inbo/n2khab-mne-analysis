@@ -5,3 +5,4 @@
 .DS_Store
 .quarto
 n2khab-mne-analysis.Rproj
+data/

@@ -129,7 +129,6 @@ WITH sampling_visits AS  (
   , SV.project_code
   , CASE 
   WHEN SV.recipient_code = '26-08679' THEN '26-008679' 
-  --    WHEN SV.grts_address = '35039538' THEN NULL
   ELSE SV.recipient_code 
   END as recipient_code
   FROM  "inbound"."SamplingVisits" SV
@@ -224,7 +223,6 @@ surf_fieldwork
 --| output.var: surf_fieldwork
 
 SELECT 
-  ---LV.*
   ST_AsText(LOC.wkb_geometry) AS wkb_geometry
   , LOC.grts_address
   , LV.sampleunit_id

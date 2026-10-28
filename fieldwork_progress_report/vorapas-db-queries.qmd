@@ -75,6 +75,7 @@ WITH BASE AS (
     , LOC.grts_address
     , LOC.location_id
     , SU.sampleunit_id
+    , V.date_start
     , V.date_visit
     , V.type
     , V.type_assessed
@@ -99,7 +100,10 @@ WITH BASE AS (
   ON V.sampleunit_id = SU.sampleunit_id
   LEFT JOIN "outbound"."Replacements" R
   ON SU.replacement_id = R.replacement_id
+  INNER JOIN "metadata"."GroupedActivities" GA
+  ON V.activity_group_id = GA.activity_group_id
   WHERE V.visit_done
+  AND GA.activity_group LIKE 'LOCEVAL%'
 )
 
 SELECT * 

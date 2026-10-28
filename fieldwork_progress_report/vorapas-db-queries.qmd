@@ -109,7 +109,7 @@ WITH BASE AS (
 SELECT * 
 FROM BASE
 WHERE scheme IN ('GW_03.3', 'SOIL_03.2', 'SURF_03.4_lentic')
-AND (date_visit IS NULL OR date_visit <  '2026-09-26')
+-- AND (date_visit IS NULL OR date_visit <  '2026-09-26')
 ```
 
 ## Groundwater
@@ -138,7 +138,7 @@ WITH sampling_visits AS  (
   WHERE NOT SV.issues
   AND SV.visit_done
   AND NOT FC.excluded
-  AND (SV.date_visit IS NULL OR SV.date_visit <  '2026-09-26')
+  -- AND (SV.date_visit IS NULL OR SV.date_visit <  '2026-09-26')
 )
 
 SELECT 
@@ -166,7 +166,7 @@ ON IV.location_id = SV.location_id AND IV.sampleunit_id = SV.sampleunit_id
 WHERE NOT IV.issues
 AND IV.visit_done
 AND NOT FC.excluded
-AND (IV.date_visit IS NULL OR IV.date_visit <  '2026-09-26')
+-- AND (IV.date_visit IS NULL OR IV.date_visit <  '2026-09-26')
 GROUP BY 
 LOC.wkb_geometry
 , LOC.location_id
@@ -242,7 +242,7 @@ ON LV.visit_id = FC.visit_id AND LV.fieldcalendar_id = FC.fieldcalendar_id
 WHERE NOT LV.issues
 AND LV.visit_done
 AND NOT FC.excluded
-AND (LV.date_visit IS NULL OR LV.date_visit <  '2026-09-26')
+-- AND (LV.date_visit IS NULL OR LV.date_visit <  '2026-09-26')
 ORDER BY grts_address, stratum
 ```
 

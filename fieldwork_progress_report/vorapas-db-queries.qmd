@@ -53,11 +53,10 @@ con_lims <- lims_connect()
 ```
 
 ```{r}
-# library(DBI)
-# dbDisconnect(con_gw)
-# dbDisconnect(con_surf)
-# dbDisconnect(con_le)
-# dbDisconnect(con_lims)
+# DBI::dbDisconnect(con_gw)
+# DBI::dbDisconnect(con_surf)
+# DBI::dbDisconnect(con_le)
+# DBI::dbDisconnect(con_lims)
 ```
 
 # Input Data

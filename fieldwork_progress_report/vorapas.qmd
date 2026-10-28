@@ -487,6 +487,8 @@ plot_locevals_by_scheme_facets <- ggplot() +
 plot_locevals_by_scheme_facets
 ```
 
+**Locevals for soil**
+
 ```{r}
 #| fig-height: 4
 #| fig-width: 8

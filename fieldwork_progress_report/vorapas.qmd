@@ -917,115 +917,115 @@ walk(plot_list_selected_var, print)
 #| label: save-plots
 #| include: false
 
-plot_output_dir <- "vorapas_output"
-dir.create(plot_output_dir, showWarnings = FALSE, recursive = TRUE)
-
-save_report_plot <- function(plot, filename, width, height, dpi = 300) {
-  ggsave(
-    filename = file.path(plot_output_dir, filename),
-    plot = plot,
-    width = width,
-    height = height,
-    dpi = dpi,
-    bg = "white"
-  )
-}
-
-safe_plot_filename <- function(name) {
-  name |>
-    str_to_lower() |>
-    str_replace_all("[^[:alnum:]]+", "_") |>
-    str_replace_all("^_|_$", "")
-}
-
-report_plots <- list(
-  "groundwater_installations_samples.png" = plot_gw_installations_samples,
-  "locevals_by_scheme.png" = plot_locevals_by_scheme,
-  "locevals_by_scheme_facets.png" = plot_locevals_by_scheme_facets,
-  "surface_water_visits.png" = plot_surface_water_visits,
-  "chemistry_overall_distribution.png" = plot_chem_overall,
-  "chemistry_nitrogen_distribution.png" = plot_chem_selected,
-  "plot_soil_evals_approved.png" = plot_soil_evals_approved
-)
-
-report_plot_dimensions <- tibble(
-  filename = names(report_plots),
-  width = c(8, 8, 8, 8, 9, 9, 8),
-  height = c(4, 4, 11, 4, 6, 6, 4)
-)
-
-iwalk(report_plots, \(plot, filename) {
-  dimensions <- filter(report_plot_dimensions, filename == !!filename)
-  save_report_plot(
-    plot,
-    filename,
-    width = dimensions$width,
-    height = dimensions$height
-  )
-})
-
-iwalk(plot_list, \(plot, typegroup_name) {
-  save_report_plot(
-    plot,
-    paste0("chemistry_by_typegroup_", safe_plot_filename(typegroup_name), ".png"),
-    width = 9,
-    height = 6
-  )
-})
-
-iwalk(plot_list_selected_var, \(plot, typegroup_name) {
-  save_report_plot(
-    plot,
-    paste0("chemistry_nitrogen_by_typegroup_", safe_plot_filename(typegroup_name), ".png"),
-    width = 9,
-    height = 6
-  )
-})
+# plot_output_dir <- "vorapas_output"
+# dir.create(plot_output_dir, showWarnings = FALSE, recursive = TRUE)
+# 
+# save_report_plot <- function(plot, filename, width, height, dpi = 300) {
+#   ggsave(
+#     filename = file.path(plot_output_dir, filename),
+#     plot = plot,
+#     width = width,
+#     height = height,
+#     dpi = dpi,
+#     bg = "white"
+#   )
+# }
+# 
+# safe_plot_filename <- function(name) {
+#   name |>
+#     str_to_lower() |>
+#     str_replace_all("[^[:alnum:]]+", "_") |>
+#     str_replace_all("^_|_$", "")
+# }
+# 
+# report_plots <- list(
+#   "groundwater_installations_samples.png" = plot_gw_installations_samples,
+#   "locevals_by_scheme.png" = plot_locevals_by_scheme,
+#   "locevals_by_scheme_facets.png" = plot_locevals_by_scheme_facets,
+#   "surface_water_visits.png" = plot_surface_water_visits,
+#   "chemistry_overall_distribution.png" = plot_chem_overall,
+#   "chemistry_nitrogen_distribution.png" = plot_chem_selected,
+#   "plot_soil_evals_approved.png" = plot_soil_evals_approved
+# )
+# 
+# report_plot_dimensions <- tibble(
+#   filename = names(report_plots),
+#   width = c(8, 8, 8, 8, 9, 9, 8),
+#   height = c(4, 4, 11, 4, 6, 6, 4)
+# )
+# 
+# iwalk(report_plots, \(plot, filename) {
+#   dimensions <- filter(report_plot_dimensions, filename == !!filename)
+#   save_report_plot(
+#     plot,
+#     filename,
+#     width = dimensions$width,
+#     height = dimensions$height
+#   )
+# })
+# 
+# iwalk(plot_list, \(plot, typegroup_name) {
+#   save_report_plot(
+#     plot,
+#     paste0("chemistry_by_typegroup_", safe_plot_filename(typegroup_name), ".png"),
+#     width = 9,
+#     height = 6
+#   )
+# })
+# 
+# iwalk(plot_list_selected_var, \(plot, typegroup_name) {
+#   save_report_plot(
+#     plot,
+#     paste0("chemistry_nitrogen_by_typegroup_", safe_plot_filename(typegroup_name), ".png"),
+#     width = 9,
+#     height = 6
+#   )
+# })
 ```
 
 ```{r}
 #| label: write-tables-google-sheet
 #| include: false
 
-google_sheet_id <- Sys.getenv("VORA_PAS_GOOGLE_SHEET_ID")
-
-tables_to_export <- list(
-  loceval_overview = loceval_overview,
-  loceval_by_scheme = loceval_by_scheme,
-  loceval_by_category = loceval_by_category,
-  loceval_inconsistent_data = loceval_inconsistent_data,
-  gw_installation_summary = gw_installation_summary,
-  gw_numbers = gw_numbers,
-  surf_overview = surf_overview,
-  gw_sampling_overview = gw_sampling_overview,
-  lims_unapproved_data = lims_unapproved_data,
-  gw_samples_missing_id = gw_samples_missing_id,
-  gw_samples_missing_in_lims = gw_samples_missing_in_lims,
-  lims_missing_in_fieldwork = lims_missing_in_fieldwork,
-  lims_below_loq_overview = lims_below_loq_overview,
-  lims_below_loq_details = lims_below_loq_details
-)
-
-prepare_table_for_google_sheets <- function(data) {
-  data |>
-    mutate(
-      across(
-        where(\(column) inherits(column, "integer64")),
-        as.character
-      )
-    )
-}
-
-if (nzchar(google_sheet_id)) {
-  googlesheets4::gs4_auth()
-  iwalk(tables_to_export, \(data, sheet_name) {
-    googlesheets4::sheet_write(
-      data = prepare_table_for_google_sheets(data),
-      ss = google_sheet_id,
-      sheet = sheet_name
-    )
-  })
-} else {
-  message("Set VORA_PAS_GOOGLE_SHEET_ID to write report tables to Google Sheets.")
-}
+# google_sheet_id <- Sys.getenv("VORA_PAS_GOOGLE_SHEET_ID")
+# 
+# tables_to_export <- list(
+#   loceval_overview = loceval_overview,
+#   loceval_by_scheme = loceval_by_scheme,
+#   loceval_by_category = loceval_by_category,
+#   loceval_inconsistent_data = loceval_inconsistent_data,
+#   gw_installation_summary = gw_installation_summary,
+#   gw_numbers = gw_numbers,
+#   surf_overview = surf_overview,
+#   gw_sampling_overview = gw_sampling_overview,
+#   lims_unapproved_data = lims_unapproved_data,
+#   gw_samples_missing_id = gw_samples_missing_id,
+#   gw_samples_missing_in_lims = gw_samples_missing_in_lims,
+#   lims_missing_in_fieldwork = lims_missing_in_fieldwork,
+#   lims_below_loq_overview = lims_below_loq_overview,
+#   lims_below_loq_details = lims_below_loq_details
+# )
+# 
+# prepare_table_for_google_sheets <- function(data) {
+#   data |>
+#     mutate(
+#       across(
+#         where(\(column) inherits(column, "integer64")),
+#         as.character
+#       )
+#     )
+# }
+# 
+# if (nzchar(google_sheet_id)) {
+#   googlesheets4::gs4_auth()
+#   iwalk(tables_to_export, \(data, sheet_name) {
+#     googlesheets4::sheet_write(
+#       data = prepare_table_for_google_sheets(data),
+#       ss = google_sheet_id,
+#       sheet = sheet_name
+#     )
+#   })
+# } else {
+#   message("Set VORA_PAS_GOOGLE_SHEET_ID to write report tables to Google Sheets.")
+# }
 ```

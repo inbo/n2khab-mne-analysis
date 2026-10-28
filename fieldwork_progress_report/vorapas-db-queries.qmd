@@ -20,6 +20,11 @@ library(scales)
 ```
 
 ```{r}
+#' Establishes a PostgreSQL connection using database credentials defined in
+#' .Renviron. Returns a DBI connection object to the specified target database.
+#' 
+#' @param dbname the name of the database you want to connect to
+#' @returns A DBI connection object
 veldwerk_connect <- function(dbname) {
   # Read credentials from environment variables (.Renviron)
   host <- Sys.getenv("VELDWERK_HOST")
@@ -32,6 +37,7 @@ veldwerk_connect <- function(dbname) {
     stop("Database credentials are missing. Check your .Renviron file.")
   }
   
+  # Return connection object
   DBI::dbConnect(
     drv      = RPostgres::Postgres(),
     dbname   = dbname,
@@ -45,12 +51,16 @@ veldwerk_connect <- function(dbname) {
 
 # Database connections
 
+Initializes database connections to the groundwater, surface water, location evaluation, and LIMS databases.
+
 ```{r}
 con_gw <- veldwerk_connect("mnmgwdb")
 con_surf <- veldwerk_connect("mnmsurfdb")
 con_le <- veldwerk_connect("loceval")
 con_lims <- lims_connect()
 ```
+
+Run next piece of code if you are finished working on the databases and want to close all connections (are run only the lines of the DBs you want to disconnect from).
 
 ```{r}
 # DBI::dbDisconnect(con_gw)
@@ -63,7 +73,7 @@ con_lims <- lims_connect()
 
 ## Locevals
 
-le_fieldwork
+**`le_fieldwork`** - Completed location evaluation visits for target schemes (`GW_03.3`, `SOIL_03.2`, `SURF_03.4_lentic`). This table has one record per scheme - location - sampleunit - datevisit (mostly only one record for every scheme - location - sampleunit, but some places have had multiple visits).
 
 ```{sql}
 --| connection: con_le
@@ -114,7 +124,7 @@ WHERE scheme IN ('GW_03.3', 'SOIL_03.2', 'SURF_03.4_lentic')
 
 ## Groundwater
 
-gw_fieldwork
+**`gw_fieldwork`** - Combination of groundwater installation and sampling visits. One record per location_id - sampleunit_id - installation_date - sampling_date (mostly only one record for every location_id - sampleunit_id, sometimes multiple samples have been done).
 
 ```{sql}
 --| connection: con_gw
@@ -181,7 +191,7 @@ LOC.wkb_geometry
 ORDER BY is_sampled
 ```
 
-gw_types
+**`gw_types`** - Mapping table between stratum, habitat types and main types for the groundwater scheme.
 
 ```{sql}
 --| connection: con_gw
@@ -191,7 +201,7 @@ SELECT DISTINCT stratum, type, main_type
 FROM "metadata"."N2kHabStrata"
 ```
 
-gw_domains
+**`gw_domains`** - Combines every grts_address of the groundwater scheme to domain information.
 
 ```{sql}
 --| connection: con_gw
@@ -216,7 +226,7 @@ AND domain_part IS NOT NULL
 
 ## Surface water
 
-surf_fieldwork
+**`surf_fieldwork`** - Completed surface water fieldwork. One record for every location - sampleunit_id - date_start.
 
 ```{sql}
 --| connection: con_surf
@@ -246,7 +256,12 @@ ORDER BY grts_address, stratum
 
 ## Lims
 
-lims_sampleresults
+**`lims_sampleresults`** - Returns normalized concentration values per lab sample and component:
+
+1.  Extracts chemical lab results for target variables (NH4, NO3, PO4, SO4),
+2.  applies stoïchiometry conversions (to N-NH4, N-NO3, P-PO4),
+3.  adjusts for limits of quantification (LOQ),
+4.  and deduplicates conflicting sample versions (based on projectstatus, samplestatus, resultstatus).
 
 ```{sql}
 --| connection: con_lims
@@ -280,9 +295,9 @@ WITH RankedResults AS (
       , ROW_NUMBER() OVER (
           PARTITION BY r.Project, s.LabSampleID, r.Component
           ORDER BY 
-              p.ProjectStatus DESC,   -- MIN ProjectStatus (bijv. 'V' boven 'C')
-              s.SampleStatus ASC,  -- MAX SampleStatus (bijv. 'A' boven 'C')
-              r.ResultStatus ASC   -- MAX ResultStatus (bijv. 'A' boven 'E')
+              p.ProjectStatus DESC,  -- MIN ProjectStatus (e.g. 'V' over 'C')
+              s.SampleStatus ASC,    -- MAX SampleStatus (e.g. 'A' over 'C')
+              r.ResultStatus ASC     -- MAX ResultStatus (e.g. 'A' over 'E')
         ) AS rn
     FROM dimSample s 
     LEFT JOIN factResult r ON r.SampleKey = s.SampleKey 
@@ -332,14 +347,14 @@ ORDER BY Project, LabSampleID, Component
 
 ## Rep
 
-rep_types
+**`rep_types`** - Saves the habitat type information from the REP for the groundwater scheme.
 
 ```{r}
 rep_types <- n2khabmon::read_scheme_types(lang = "nl") |> 
   filter(.data$scheme == 'GW_03.3')
 ```
 
-rep_sbz
+**`rep_sbz`** - Gets the polygon boundaries for SAC areas in Flanders.
 
 ```{r}
 rep_sbz <- n2khab::read_admin_areas(dsn = "sac")
@@ -347,7 +362,7 @@ rep_sbz <- n2khab::read_admin_areas(dsn = "sac")
 
 ## Gisco
 
-vlaanderen_provincies
+**`vlaanderen_provincies`** - Gets the polygon boundaries for Belgium.
 
 ```{r}
 vlaanderen_provincies <- gisco_get_nuts(
@@ -366,6 +381,8 @@ vlaanderen_provincies <- gisco_get_nuts(
 ```
 
 # Create snapshots
+
+Persists all extracted database queries and spatial layers as individual serialized `.rds` files into a dated snapshot directory for reproducible reporting.
 
 ```{r}
 snapshot_dir <- here::here(
@@ -395,6 +412,8 @@ for (name in names(snapshots)) {
 ```
 
 # Snapshot field overview
+
+Inspects the saved `.rds` snapshots and prints a summary table listing all column/attribute names per dataset to confirm schema consistency.
 
 ```{r}
 snapshot_files <- list.files(
